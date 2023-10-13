@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "tg-yt-dlp"
+version = "0.1.0"
+description = "Telegram bot that downloads videos from YouTube and other sites"
+authors = ["Andrew Zhu <dir01@dir01.org>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+yt-dlp = "^2023.10.7"
+python-telegram-bot = "^20.6"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -4,7 +4,7 @@ RUN pip3 install poetry
 
 WORKDIR /app
 
-ADD poetry.lock pyproject.toml __init__.py /app/
+ADD poetry.lock pyproject.toml /app/
 RUN poetry install
 RUN apk add --no-cache ffmpeg
 ADD . .

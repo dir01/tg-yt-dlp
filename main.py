@@ -63,7 +63,8 @@ async def handle_url(update: Update, context: CallbackContext):
                 'preferedformat': 'mp4',
             }],
             'progress_hooks': [_update_progress_msg],
-            'quiet': True
+            'quiet': True,
+            'trim_file_name': 100,
         }) as ydl:
             info_dict = ydl.extract_info(url_, download=True)
             filename_ = ydl.prepare_filename(info_dict)

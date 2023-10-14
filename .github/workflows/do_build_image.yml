@@ -51,6 +51,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha
+            latest
 
       - name: Cache Docker layers
         uses: actions/cache@v3

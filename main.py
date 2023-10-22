@@ -1,7 +1,9 @@
 import asyncio
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 import yt_dlp
 from telegram import Update
@@ -9,12 +11,14 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Callb
 
 URL_RE = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
 MAX_TG_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+TMP_DIR = os.path.join(os.path.dirname(__file__), 'tmp')
 
 
 def main():
     token = os.environ['TELEGRAM_TOKEN']
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    loop.create_task(clean_old_files())
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("start", handle_help))
@@ -38,6 +42,7 @@ async def handle_url(update: Update, context: CallbackContext):
     loop = asyncio.get_event_loop()
 
     prev_percent = 0
+
     def _update_progress_msg(d):
         nonlocal prev_percent
         if d['status'] == 'downloading':
@@ -56,7 +61,7 @@ async def handle_url(update: Update, context: CallbackContext):
 
     def _download(url_: str) -> str:
         with yt_dlp.YoutubeDL({
-            'outtmpl': '%(title)s.%(ext)s',
+            'outtmpl': f'{TMP_DIR}/%(title)s.%(ext)s',
             'format': 'bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
@@ -101,6 +106,19 @@ async def handle_url(update: Update, context: CallbackContext):
 
     await progress_msg.delete()
     os.remove(filename)
+
+
+async def clean_old_files():
+    while True:
+        now = time.time()
+        for filename in os.listdir(TMP_DIR):
+            if filename == '.gitkeep':
+                continue
+            filepath = os.path.join(TMP_DIR, filename)
+            stat = os.stat(filepath)
+            if (now - stat.st_mtime) > timedelta(minutes=1).total_seconds():
+                os.unlink(filepath)
+        await asyncio.sleep(timedelta(minutes=2).total_seconds())
 
 
 def is_url(url: str) -> bool:

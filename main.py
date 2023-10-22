@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
@@ -33,10 +34,13 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_url(update: Update, context: CallbackContext):
     url = update.message.text
     if not is_url(url):
-        await update.message.reply_text("Invalid URL. Please send a valid video URL",
-                                        reply_to_message_id=update.message.message_id)
+        await update.message.reply_text(
+            "Invalid URL. Please send a valid video URL",
+            reply_to_message_id=update.message.message_id,
+        )
         return
 
+    filepath = os.path.join(TMP_DIR, uuid.uuid4().hex + '.mp4')
     progress_msg = await update.message.reply_text("⬇️ Downloading...", reply_to_message_id=update.message.message_id)
 
     loop = asyncio.get_event_loop()
@@ -59,9 +63,9 @@ async def handle_url(update: Update, context: CallbackContext):
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
             return ydl.extract_info(url_, download=False)
 
-    def _download(url_: str) -> str:
+    def _download(url_: str):
         with yt_dlp.YoutubeDL({
-            'outtmpl': f'{TMP_DIR}/%(title)s.%(ext)s',
+            'outtmpl': filepath,
             'format': 'bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
@@ -69,22 +73,18 @@ async def handle_url(update: Update, context: CallbackContext):
             }],
             'progress_hooks': [_update_progress_msg],
             'quiet': True,
-            'trim_file_name': 100,
         }) as ydl:
-            info_dict = ydl.extract_info(url_, download=True)
-            filename_ = ydl.prepare_filename(info_dict)
-        return filename_
+            ydl.download([url_])
 
     with ThreadPoolExecutor() as pool:
         try:
             info = await loop.run_in_executor(pool, _get_info, url) or {}
 
             file_size = info.get('filesize', 0) or info.get('filesize_approx', 0) or 0
-            filename = None
 
             if not file_size:
-                filename = await loop.run_in_executor(pool, _download, url)
-                file_size = os.path.getsize(filename)
+                await loop.run_in_executor(pool, _download, url)
+                file_size = os.path.getsize(filepath)
 
             if file_size > MAX_TG_FILE_SIZE:
                 file_size_mb = int(file_size / 1024 / 1024)
@@ -93,19 +93,19 @@ async def handle_url(update: Update, context: CallbackContext):
                 )
                 return
 
-            if not filename:
-                filename = await loop.run_in_executor(pool, _download, url)
+            if not os.path.exists(filepath):
+                await loop.run_in_executor(pool, _download, url)
         except Exception as e:
             await progress_msg.edit_text(f"🚫 Sorry, mate, seems I shat my pants on that one")
             raise
 
     await progress_msg.edit_text("⬆️ Uploading...")
 
-    with open(filename, 'rb') as f:
+    with open(filepath, 'rb') as f:
         await update.message.reply_video(video=f, reply_to_message_id=update.message.message_id)
 
     await progress_msg.delete()
-    os.remove(filename)
+    os.remove(filepath)
 
 
 async def clean_old_files():

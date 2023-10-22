@@ -71,24 +71,28 @@ async def handle_url(update: Update, context: CallbackContext):
         return filename_
 
     with ThreadPoolExecutor() as pool:
-        info = await loop.run_in_executor(pool, _get_info, url) or {}
+        try:
+            info = await loop.run_in_executor(pool, _get_info, url) or {}
 
-        file_size = info.get('filesize', 0) or info.get('filesize_approx', 0) or 0
-        filename = None
+            file_size = info.get('filesize', 0) or info.get('filesize_approx', 0) or 0
+            filename = None
 
-        if not file_size:
-            filename = await loop.run_in_executor(pool, _download, url)
-            file_size = os.path.getsize(filename)
+            if not file_size:
+                filename = await loop.run_in_executor(pool, _download, url)
+                file_size = os.path.getsize(filename)
 
-        if file_size > MAX_TG_FILE_SIZE:
-            file_size_mb = int(file_size / 1024 / 1024)
-            await update.message.reply_text(
-                f"🚫 File size is {file_size_mb}MB, which is over Telegram's limit for bots (50MB)"
-            )
-            return
+            if file_size > MAX_TG_FILE_SIZE:
+                file_size_mb = int(file_size / 1024 / 1024)
+                await update.message.reply_text(
+                    f"🚫 File size is {file_size_mb}MB, which is over Telegram's limit for bots (50MB)"
+                )
+                return
 
-        if not filename:
-            filename = await loop.run_in_executor(pool, _download, url)
+            if not filename:
+                filename = await loop.run_in_executor(pool, _download, url)
+        except Exception as e:
+            await progress_msg.edit_text(f"🚫 Sorry, mate, seems I shat my pants on that one")
+            raise
 
     await progress_msg.edit_text("⬆️ Uploading...")
 

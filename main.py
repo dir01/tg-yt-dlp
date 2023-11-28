@@ -5,33 +5,81 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from urllib.parse import urlparse
 
 import yt_dlp
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackContext, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackContext,
+    MessageHandler,
+    filters,
+)
+from aioprometheus import Counter
+from aioprometheus.service import Service
 
-URL_RE = re.compile(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
+URL_RE = re.compile(
+    r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+)
 MAX_TG_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-TMP_DIR = os.path.join(os.path.dirname(__file__), 'tmp')
+TMP_DIR = os.path.join(os.path.dirname(__file__), "tmp")
+
+messages_total = Counter(
+    "tg_yt_dlp_messages_total",
+    "Total number of messages",
+)
+filesize_limit_exceeded_total = Counter(
+    "tg_yt_dlp_filesize_limit_exceeded_total",
+    "Total number of URLs with file size over limit",
+)
+wrong_url_total = Counter(
+    "tg_yt_dlp_wrong_url_total",
+    "Total number of malformed/broken/unsupported URLs",
+)
+unknown_error_total = Counter(
+    "tg_yt_dlp_unknown_error_total",
+    "Total number of unknown errors",
+)
+link_domain_total = Counter(
+    "tg_yt_dlp_link_domains_total",
+    "Total number of links by domain",
+)
+metrics_service = Service()
 
 
 def main():
-    token = os.environ['TELEGRAM_TOKEN']
+    token = os.environ["TELEGRAM_TOKEN"]
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.create_task(clean_old_files())
+    clean_task = loop.create_task(clean_old_files())
+    loop.create_task(metrics_service.start(addr="0.0.0.0", port=9100))
+
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("start", handle_help))
-    app.add_handler(MessageHandler(filters=filters.Regex('.*'), callback=handle_url))
-    app.run_polling()
+    app.add_handler(MessageHandler(filters=filters.Regex(".*"), callback=handle_url))
+
+    try:
+        app.run_polling()
+    except KeyboardInterrupt:
+        loop.run_until_complete(app.stop())
+        loop.run_until_complete(metrics_service.stop())
+        clean_task.cancel()
+        loop.run_until_complete(clean_task)
+        raise
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('YOU SEND LINK, ME SENDS VIDEO. TELEGRAM LIMIT VIDEO 50MB, SE LA VIE')
+    messages_total.inc({"handler": "help"})
+    await update.message.reply_text(
+        "YOU SEND LINK, ME SENDS VIDEO. TELEGRAM LIMIT VIDEO 50MB, SE LA VIE"
+    )
 
 
 async def handle_url(update: Update, context: CallbackContext):
+    messages_total.inc({"handler": "url"})
     url = update.message.text
     if not is_url(url):
         await update.message.reply_text(
@@ -40,8 +88,13 @@ async def handle_url(update: Update, context: CallbackContext):
         )
         return
 
-    filepath = os.path.join(TMP_DIR, uuid.uuid4().hex + '.mp4')
-    progress_msg = await update.message.reply_text("⬇️ Downloading...", reply_to_message_id=update.message.message_id)
+    link_domain_total.inc({"domain": urlparse(url).netloc})
+
+    filepath = os.path.join(TMP_DIR, uuid.uuid4().hex + ".mp4")
+    progress_msg = await update.message.reply_text(
+        "⬇️ Downloading...",
+        reply_to_message_id=update.message.message_id,
+    )
 
     loop = asyncio.get_event_loop()
 
@@ -49,9 +102,9 @@ async def handle_url(update: Update, context: CallbackContext):
 
     def _update_progress_msg(d):
         nonlocal prev_percent
-        if d['status'] == 'downloading':
-            downloaded = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+        if d["status"] == "downloading":
+            downloaded = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
             percent = int(downloaded / total * 100 if total else 0)
             if percent - prev_percent < 5:
                 return
@@ -60,27 +113,31 @@ async def handle_url(update: Update, context: CallbackContext):
             asyncio.run_coroutine_threadsafe(progress_msg.edit_text(new_text), loop)
 
     def _get_info(url_: str) -> dict:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
             return ydl.extract_info(url_, download=False)
 
     def _download(url_: str):
-        with yt_dlp.YoutubeDL({
-            'outtmpl': filepath,
-            'format': 'bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best',
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-            'progress_hooks': [_update_progress_msg],
-            'quiet': True,
-        }) as ydl:
+        with yt_dlp.YoutubeDL(
+            {
+                "outtmpl": filepath,
+                "format": "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegVideoConvertor",
+                        "preferedformat": "mp4",
+                    }
+                ],
+                "progress_hooks": [_update_progress_msg],
+                "quiet": True,
+            }
+        ) as ydl:
             ydl.download([url_])
 
     with ThreadPoolExecutor() as pool:
         try:
             info = await loop.run_in_executor(pool, _get_info, url) or {}
 
-            file_size = info.get('filesize', 0) or info.get('filesize_approx', 0) or 0
+            file_size = info.get("filesize", 0) or info.get("filesize_approx", 0) or 0
 
             if not file_size:
                 await loop.run_in_executor(pool, _download, url)
@@ -91,18 +148,25 @@ async def handle_url(update: Update, context: CallbackContext):
                 await update.message.reply_text(
                     f"🚫 File size is {file_size_mb}MB, which is over Telegram's limit for bots (50MB)"
                 )
+                filesize_limit_exceeded_total.inc({})
                 return
 
             if not os.path.exists(filepath):
                 await loop.run_in_executor(pool, _download, url)
         except Exception as e:
-            await progress_msg.edit_text(f"🚫 Sorry, mate, seems I shat my pants on that one")
+            unknown_error_total.inc({})
+            await progress_msg.edit_text(
+                f"🚫 Sorry, mate, seems I shat my pants on that one"
+            )
             raise
 
     await progress_msg.edit_text("⬆️ Uploading...")
 
-    with open(filepath, 'rb') as f:
-        await update.message.reply_video(video=f, reply_to_message_id=update.message.message_id)
+    with open(filepath, "rb") as f:
+        await update.message.reply_video(
+            video=f,
+            reply_to_message_id=update.message.message_id,
+        )
 
     await progress_msg.delete()
     os.remove(filepath)
@@ -112,7 +176,7 @@ async def clean_old_files():
     while True:
         now = time.time()
         for filename in os.listdir(TMP_DIR):
-            if filename == '.gitkeep':
+            if filename == ".gitkeep":
                 continue
             filepath = os.path.join(TMP_DIR, filename)
             stat = os.stat(filepath)
@@ -125,5 +189,5 @@ def is_url(url: str) -> bool:
     return bool(re.search(URL_RE, url))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

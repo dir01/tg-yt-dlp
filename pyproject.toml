@@ -9,7 +9,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.11"
 yt-dlp = "^2023.11.16"
-python-telegram-bot = "^20.6"
+python-telegram-bot = "^20.7"
 
 
 [build-system]

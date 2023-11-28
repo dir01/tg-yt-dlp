@@ -13,7 +13,7 @@ Whenever new version of [yt-dlp](https://github.com/yt-dlp/yt-dlp), the followin
 3. GitHub action will automatically build a new docker image
 4. (Irrelevant to anyone but me) [argocd-image-updater](https://argocd-image-updater.readthedocs.io/en/stable/) in my cluster will detect this and roll out new version
 
-It's also a very small project, just around 100 lines of code
+It's also a very small project, just around 200 lines of code
 
 ## Limitations and Downsides
 1. Telegram has a 50MB file size limit, so this bot will not download videos larger than that

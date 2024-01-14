@@ -59,6 +59,7 @@ def main():
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("start", handle_help))
+    app.add_handler(CommandHandler("audio", handle_url))
     app.add_handler(MessageHandler(filters=filters.Regex(".*"), callback=handle_url))
 
     try:
@@ -74,13 +75,21 @@ def main():
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     messages_total.inc({"handler": "help"})
     await update.message.reply_text(
-        "YOU SEND LINK, ME SENDS VIDEO. TELEGRAM LIMIT VIDEO 50MB, SE LA VIE"
+        "YOU SEND LINK, ME SENDS VIDEO. YOU SEND /audio LINK, ME SENDS AUDIO. TELEGRAM LIMIT 50MB, SE LA VIE"
     )
 
 
 async def handle_url(update: Update, context: CallbackContext):
-    messages_total.inc({"handler": "url"})
     url = update.message.text
+    download_mode = "video"
+    file_extention = ".mp4"
+    if url.startswith('/audio '):
+        download_mode = "audio"
+        file_extention = ".mp3"
+        messages_total.inc({"handler": "audio"})
+        url = url[7:]
+    else:
+        messages_total.inc({"handler": "url"})
     if not is_url(url):
         await update.message.reply_text(
             "Invalid URL. Please send a valid video URL",
@@ -90,7 +99,7 @@ async def handle_url(update: Update, context: CallbackContext):
 
     link_domain_total.inc({"domain": urlparse(url).netloc})
 
-    filepath = os.path.join(TMP_DIR, uuid.uuid4().hex + ".mp4")
+    filepath = os.path.join(TMP_DIR, uuid.uuid4().hex + file_extention)
     progress_msg = await update.message.reply_text(
         "⬇️ Downloading...",
         reply_to_message_id=update.message.message_id,
@@ -117,19 +126,27 @@ async def handle_url(update: Update, context: CallbackContext):
             return ydl.extract_info(url_, download=False)
 
     def _download(url_: str):
+        yt_dlp_options = {
+            "outtmpl": filepath,
+            "format": "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best",
+            "postprocessors": [
+                {
+                    "key": "FFmpegVideoConvertor",
+                    "preferedformat": "mp4",
+                }
+            ],
+            "progress_hooks": [_update_progress_msg],
+            "quiet": True,
+        }
+        if download_mode == "audio":
+            yt_dlp_options["format"] = 'bestaudio/best'
+            yt_dlp_options["postprocessors"] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         with yt_dlp.YoutubeDL(
-            {
-                "outtmpl": filepath,
-                "format": "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best",
-                "postprocessors": [
-                    {
-                        "key": "FFmpegVideoConvertor",
-                        "preferedformat": "mp4",
-                    }
-                ],
-                "progress_hooks": [_update_progress_msg],
-                "quiet": True,
-            }
+            yt_dlp_options
         ) as ydl:
             ydl.download([url_])
 
@@ -163,11 +180,16 @@ async def handle_url(update: Update, context: CallbackContext):
     await progress_msg.edit_text("⬆️ Uploading...")
 
     with open(filepath, "rb") as f:
-        await update.message.reply_video(
-            video=f,
-            reply_to_message_id=update.message.message_id,
-        )
-
+        if download_mode == 'video': 
+            await update.message.reply_video(
+                video=f,
+                reply_to_message_id=update.message.message_id,
+            )
+        elif download_mode == 'audio':
+            await update.message.reply_audio(
+                audio=f,
+                reply_to_message_id=update.message.message_id,
+            )
     await progress_msg.delete()
     os.remove(filepath)
 

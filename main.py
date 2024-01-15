@@ -83,9 +83,11 @@ async def handle_url(update: Update, context: CallbackContext):
     url = update.message.text
     download_mode = "video"
     file_extention = ".mp4"
+    yt_dl_format = "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best"
     if url.startswith('/audio '):
         download_mode = "audio"
         file_extention = ".mp3"
+        yt_dl_format = "bestaudio/best"
         messages_total.inc({"handler": "audio"})
         url = url[7:]
     else:
@@ -127,13 +129,13 @@ async def handle_url(update: Update, context: CallbackContext):
             asyncio.run_coroutine_threadsafe(progress_msg.edit_text(new_text), loop)
 
     def _get_info(url_: str) -> dict:
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "format": yt_dl_format}) as ydl:
             return ydl.extract_info(url_, download=False)
 
     def _download(url_: str):
         yt_dlp_options = {
             "outtmpl": filepath,
-            "format": "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best",
+            "format": yt_dl_format,
             "postprocessors": [
                 {
                     "key": "FFmpegVideoConvertor",
@@ -145,7 +147,6 @@ async def handle_url(update: Update, context: CallbackContext):
             "quiet": True,
         }
         if download_mode == "audio":
-            yt_dlp_options["format"] = 'bestaudio/best'
             yt_dlp_options["postprocessors"] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',

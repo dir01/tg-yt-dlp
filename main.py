@@ -143,7 +143,7 @@ async def handle_url(update: Update, context: CallbackContext):
                 }
             ],
             "progress_hooks": [_update_progress_msg],
-            "postprocessor_hooks":[_update_filepath],
+            "postprocessor_hooks": [_update_filepath],
             "quiet": True,
         }
         if download_mode == "audio":

@@ -109,6 +109,11 @@ async def handle_url(update: Update, context: CallbackContext):
 
     prev_percent = 0
 
+    def _update_postprocessor(d):
+        nonlocal filepath
+        if d["info_dict"]["filepath"]:
+            filepath = d["info_dict"]["filepath"]
+
     def _update_progress_msg(d):
         nonlocal prev_percent
         if d["status"] == "downloading":
@@ -136,6 +141,7 @@ async def handle_url(update: Update, context: CallbackContext):
                 }
             ],
             "progress_hooks": [_update_progress_msg],
+            "postprocessor_hooks":[_update_postprocessor],
             "quiet": True,
         }
         if download_mode == "audio":

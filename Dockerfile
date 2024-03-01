@@ -1,4 +1,4 @@
-FROM python:3.12.1-alpine3.18
+FROM python:3.12.2-alpine3.18
 
 RUN apk add --no-cache gcc musl-dev libffi-dev ffmpeg
 RUN pip3 install poetry

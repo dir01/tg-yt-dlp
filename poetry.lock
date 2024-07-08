@@ -1083,13 +1083,13 @@ multidict = ">=4.0"
 
 [[package]]
 name = "yt-dlp"
-version = "2024.7.2"
+version = "2024.7.7"
 description = "A feature-rich command-line audio/video downloader"
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "yt_dlp-2024.7.2-py3-none-any.whl", hash = "sha256:4f76b48244c783e6ac06e8d7627bcf62cbeb4f6d79ba7e3cfc8249e680d4e691"},
-    {file = "yt_dlp-2024.7.2.tar.gz", hash = "sha256:2b0c86b579d4a044eaf3c4b00e3d7b24d82e6e26869fa11c288ea4395b387f41"},
+    {file = "yt_dlp-2024.7.7-py3-none-any.whl", hash = "sha256:2e90abeadc0199c787b1b4a3e0a1c8ed9d7c9f824f58da88467a1b30ed745e07"},
+    {file = "yt_dlp-2024.7.7.tar.gz", hash = "sha256:2a0f89423d25d47db949925db5bd2c6f651960ae93dbbf5b3ed61cf3a4078ce5"},
 ]
 
 [package.dependencies]
@@ -1115,4 +1115,4 @@ test = ["pytest (>=8.1,<9.0)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "ef4b010d21bbfaa98684083638c597220702f34b6c92fded827dc5ed02423375"
+content-hash = "09ed7f51765f9e2dfc635eeda9e9d2235cd905dc3dc606e270959853190ceaea"

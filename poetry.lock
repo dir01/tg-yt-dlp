@@ -578,13 +578,13 @@ files = [
 
 [[package]]
 name = "python-telegram-bot"
-version = "21.7"
+version = "21.8"
 description = "We have made you a wrapper you can't refuse"
 optional = false
 python-versions = ">=3.9"
 files = [
-    {file = "python_telegram_bot-21.7-py3-none-any.whl", hash = "sha256:aff1d7245f1b0d4d12d41c9acff74e86d7100713c2204cd02ff17f8d80d18846"},
-    {file = "python_telegram_bot-21.7.tar.gz", hash = "sha256:bc8537b77ae02531fc2ad440caafc023fd13f13cf19e592dfa1a9ff84988a012"},
+    {file = "python_telegram_bot-21.8-py3-none-any.whl", hash = "sha256:2fea8e65d97e593f47666e7de81fb15bd517100504e98ca7cb399ee6ce4f3838"},
+    {file = "python_telegram_bot-21.8.tar.gz", hash = "sha256:114437f194e32eee0651f25fb1ab1664b605e877ca33adf58547a599afe73b72"},
 ]
 
 [package.dependencies]
@@ -742,4 +742,4 @@ test = ["pytest (>=8.1,<9.0)", "pytest-rerunfailures (>=14.0,<15.0)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "823374c25cf63b8e281095f62c418a67aa3ec8d845453376cbaa477ec7ee5ec5"
+content-hash = "7bbfa1762e50f22f27b7c487a1db912d4d02fedf8ce959b03efa5fcf72304a89"

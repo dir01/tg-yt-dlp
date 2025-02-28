@@ -8,4 +8,4 @@ ADD pyproject.toml uv.lock /app/
 RUN uv sync --frozen --no-dev
 ADD . .
 
-CMD poetry run python3 main.py
+CMD uv run main.py

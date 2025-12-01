@@ -18,7 +18,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # https://github.com/docker/login-action
       - name: Log in to the Container registry

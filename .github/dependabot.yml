@@ -10,11 +10,24 @@ updates:
       # Owned by release.yml, which bumps it daily, smoke-tests it, and builds
       # an image directly. Leaving it here too would just create duplicate PRs.
       - dependency-name: "yt-dlp"
+    # One PR per batch instead of one per package: they all ride the same daily
+    # image build anyway, so splitting them only multiplies merges.
+    groups:
+      python:
+        patterns: ["*"]
+
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "monthly"
+    groups:
+      docker:
+        patterns: ["*"]
+
   - package-ecosystem: "github-actions"
-    directory: ".github/workflows"
+    directory: "/"
     schedule:
       interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]

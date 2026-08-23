@@ -24,9 +24,11 @@ jobs:
       changed: ${{ steps.bump.outputs.changed }}
       sha: ${{ steps.push.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      # Pinned to an exact version on purpose: setup-uv stopped publishing
+      # moving major tags after v8, so @v10 does not exist.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 

@@ -3,12 +3,12 @@ name = "tg-yt-dlp"
 version = "0.1.0"
 description = "Telegram bot that wraps yt-dlp"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
-    "aiohttp>=3.11.13",
-    "opentelemetry-api>=1.30.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.30.0",
-    "opentelemetry-sdk>=1.30.0",
-    "python-telegram-bot>=21.10",
-    "yt-dlp>=2025.2.19",
+    "aiohttp>=3.14.3",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "python-telegram-bot>=22.8",
+    "yt-dlp>=2026.8.19",
 ]

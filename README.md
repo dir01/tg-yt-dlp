@@ -17,8 +17,14 @@ This path runs entirely on `GITHUB_TOKEN`. An earlier version relied on Dependab
 auto-merge personal access token; the token expired, the chain broke silently, and the bot ran a
 14-month-old yt-dlp before anyone noticed. Hence also the staleness metric below.
 
-Dependabot still manages everything *except* yt-dlp, and those PRs auto-merge and get picked up by
-the next daily build.
+Dependabot still manages everything *except* yt-dlp — grouped into one PR per ecosystem — and those
+PRs auto-merge and get picked up by the next daily build.
+
+Since those merge unattended, [`ci.yml`](.github/workflows/ci.yml) runs the same smoke test plus an
+image build on every pull request.
+
+Every scheduled workflow also accepts `workflow_dispatch`, so the nightly release, the master image
+build, and the CodeQL scan can each be run by hand from the Actions tab when testing a change.
 
 ## Observability
 Metrics and traces are exported over OTLP, configured through the standard `OTEL_*` environment
@@ -29,6 +35,12 @@ instrumentation is a no-op, so local runs need no collector.
 days to catch a stalled release pipeline.
 
 `GET /health` on port 9100 backs the k8s probes.
+
+## Runtime
+Python 3.14 on Alpine, built in two stages: the compiler toolchain lives in the builder and only the
+resulting virtualenv, ffmpeg, and the two source files are copied into the image, which runs as an
+unprivileged user. Dependencies are locked in `uv.lock`; `.python-version` pins the interpreter for
+local `uv run` to the same version the image ships.
 
 ## Configuration
 | Variable | Default | Meaning |

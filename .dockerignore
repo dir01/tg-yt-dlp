@@ -3,7 +3,9 @@
 .gitignore
 .dockerignore
 .env
+.python-version
 .venv/
 Dockerfile
 README.md
+__pycache__/
 tmp/

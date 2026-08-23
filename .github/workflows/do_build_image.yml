@@ -2,9 +2,21 @@ name: Create and publish a Docker image
 
 on:
   workflow_call:
-    secrets:
-      GHCR_TOKEN:
-        required: true
+    inputs:
+      ref:
+        description: "Commit to build. Empty means the default checkout for the event."
+        type: string
+        required: false
+        default: ""
+  # Manual runs so the build can be exercised without waiting for a push or the
+  # nightly schedule.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit to build. Empty means the default checkout for the event."
+        type: string
+        required: false
+        default: ""
 
 env:
   REGISTRY: ghcr.io
@@ -12,63 +24,63 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
-      # https://github.com/docker/login-action
+      # Tags must come from what was actually checked out, not github.sha: on a
+      # schedule-triggered release the bump commit is newer than the event SHA.
+      - name: Resolve build metadata
+        id: build
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          # GITHUB_TOKEN + packages:write is enough for GHCR. The previous PAT
+          # expired silently and took the whole release pipeline down with it.
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # https://github.com/docker/setup-qemu-action
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
-      # https://github.com/docker/setup-buildx-action
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
-      # https://github.com/docker/metadata-action
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # argocd-image-updater only accepts tags matching ^sha-.* (see
+          # imageupdater-tg-yt-dlp.yaml in personal-cluster-state).
           tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
-            latest
+            type=raw,value=latest
+            type=raw,value=sha-${{ steps.build.outputs.sha }}
 
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx
-          restore-keys: |
-            ${{ runner.os }}-buildx
-
-      # https://github.com/docker/build-push-action
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            BUILD_TIMESTAMP=${{ steps.build.outputs.timestamp }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache
+          # The old actions/cache + type=local pair never refreshed: the key was
+          # static, and actions/cache will not overwrite an existing key. type=gha
+          # is managed by the cache service and updates in place.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

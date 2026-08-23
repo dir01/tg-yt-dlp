@@ -1,6 +1,9 @@
+.git/
+.github/
 .gitignore
 .dockerignore
 .env
+.venv/
 Dockerfile
 README.md
-.github/
+tmp/

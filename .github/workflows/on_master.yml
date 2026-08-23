@@ -7,6 +7,7 @@ on:
 jobs:
   image:
     name: Create and publish a Docker image
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/do_build_image.yml
-    secrets:
-      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}

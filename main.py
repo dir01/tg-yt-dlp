@@ -1,221 +1,316 @@
 import asyncio
+import contextlib
+import logging
 import os
 import re
+import shutil
+import tempfile
 import time
-import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import yt_dlp
+from aiohttp import web
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
-    CallbackContext,
     MessageHandler,
     filters,
 )
-from aioprometheus import Counter
-from aioprometheus.service import Service
 
-URL_RE = re.compile(
-    r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
-)
-MAX_TG_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-TMP_DIR = os.path.join(os.path.dirname(__file__), "tmp")
+import telemetry
 
-messages_total = Counter(
-    "tg_yt_dlp_messages_total",
-    "Total number of messages",
+LOG = logging.getLogger("tg-yt-dlp")
+
+URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+MAX_TG_FILE_SIZE = int(os.environ.get("MAX_TG_FILE_SIZE", 50 * 1024 * 1024))
+TMP_DIR = os.environ.get("TMP_DIR") or os.path.join(os.path.dirname(__file__), "tmp")
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9100))
+MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", 2))
+
+# Orphans only: the happy path deletes its own workdir. This is the safety net
+# for crashes, and the TTL is generous enough never to race a live download.
+ORPHAN_TTL = timedelta(minutes=int(os.environ.get("ORPHAN_TTL_MINUTES", 60)))
+JANITOR_INTERVAL = timedelta(minutes=10)
+
+VIDEO_FORMAT = "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best"
+AUDIO_FORMAT = "bestaudio/best"
+
+HELP_TEXT = (
+    "YOU SEND LINK, ME SENDS VIDEO. YOU SEND /audio LINK, ME SENDS AUDIO. "
+    "TELEGRAM LIMIT 50MB, C'EST LA VIE"
 )
-filesize_limit_exceeded_total = Counter(
-    "tg_yt_dlp_filesize_limit_exceeded_total",
-    "Total number of URLs with file size over limit",
-)
-wrong_url_total = Counter(
-    "tg_yt_dlp_wrong_url_total",
-    "Total number of malformed/broken/unsupported URLs",
-)
-unknown_error_total = Counter(
-    "tg_yt_dlp_unknown_error_total",
-    "Total number of unknown errors",
-)
-link_domain_total = Counter(
-    "tg_yt_dlp_link_domains_total",
-    "Total number of links by domain",
-)
-metrics_service = Service()
+
+# yt-dlp is blocking and CPU/IO heavy; bound it so one busy chat can't spawn an
+# unbounded number of ffmpeg processes. The semaphore bounds queueing, the pool
+# bounds the threads themselves.
+_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS, thread_name_prefix="ytdlp")
+_slots = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 
 def main():
-    token = os.environ["TELEGRAM_TOKEN"]
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    clean_task = loop.create_task(clean_old_files())
-    loop.create_task(metrics_service.start(addr="0.0.0.0", port=9100))
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    telemetry.setup()
+    os.makedirs(TMP_DIR, exist_ok=True)
 
-    app = ApplicationBuilder().token(token).build()
+    app = (
+        ApplicationBuilder()
+        .token(os.environ["TELEGRAM_TOKEN"])
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("start", handle_help))
     app.add_handler(CommandHandler("audio", handle_url))
-    app.add_handler(MessageHandler(filters=filters.Regex(".*"), callback=handle_url))
+    app.add_handler(MessageHandler(filters=filters.TEXT & ~filters.COMMAND, callback=handle_url))
+    app.add_error_handler(handle_error)
 
-    try:
-        app.run_polling()
-    except KeyboardInterrupt:
-        loop.run_until_complete(app.stop())
-        loop.run_until_complete(metrics_service.stop())
-        clean_task.cancel()
-        loop.run_until_complete(clean_task)
-        raise
+    # run_polling installs its own SIGINT/SIGTERM handlers and drives shutdown
+    # through post_shutdown, so there is nothing to unwind here.
+    app.run_polling()
+
+
+async def _post_init(app) -> None:
+    app.bot_data["janitor"] = asyncio.create_task(clean_orphans())
+    runner = web.AppRunner(_health_app())
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", HEALTH_PORT).start()
+    app.bot_data["health_runner"] = runner
+    LOG.info("health server on :%s, %s download slots", HEALTH_PORT, MAX_CONCURRENT_DOWNLOADS)
+
+
+async def _post_shutdown(app) -> None:
+    janitor = app.bot_data.get("janitor")
+    if janitor:
+        janitor.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await janitor
+    runner = app.bot_data.get("health_runner")
+    if runner:
+        await runner.cleanup()
+    _pool.shutdown(wait=False, cancel_futures=True)
+    telemetry.shutdown()
+
+
+def _health_app() -> web.Application:
+    async def ok(_request):
+        return web.json_response({"status": "ok", "yt_dlp": yt_dlp.version.__version__})
+
+    app = web.Application()
+    app.router.add_get("/health", ok)
+    # Kept so the existing k8s probes (which point at /metrics from the
+    # aioprometheus days) keep passing through the rollout. Remove once the
+    # deployment manifest has moved to /health.
+    app.router.add_get("/metrics", ok)
+    return app
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    messages_total.inc({"handler": "help"})
-    await update.message.reply_text(
-        "YOU SEND LINK, ME SENDS VIDEO. YOU SEND /audio LINK, ME SENDS AUDIO. TELEGRAM LIMIT 50MB, SE LA VIE"
-    )
+    telemetry.messages.add(1, {"handler": "help"})
+    await update.message.reply_text(HELP_TEXT)
 
 
-async def handle_url(update: Update, context: CallbackContext):
-    url = update.message.text
-    download_mode = "video"
-    file_extention = ".mp4"
-    yt_dl_format = "bestvideo[ext=mp4][vcodec=avc1.4D401F]+bestaudio[ext=m4a]/best"
-    if url.startswith('/audio '):
-        download_mode = "audio"
-        file_extention = ".mp3"
-        yt_dl_format = "bestaudio/best"
-        messages_total.inc({"handler": "audio"})
-        url = url[7:]
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    text = message.text or ""
+
+    if text.startswith("/audio"):
+        mode, fmt = "audio", AUDIO_FORMAT
+        text = text[len("/audio"):]
     else:
-        messages_total.inc({"handler": "url"})
-    if not is_url(url):
-        await update.message.reply_text(
+        mode, fmt = "video", VIDEO_FORMAT
+    telemetry.messages.add(1, {"handler": mode})
+
+    # Match the URL out of the message rather than assuming the whole message is
+    # one, so "look at this <url>" works.
+    match = URL_RE.search(text)
+    if not match:
+        telemetry.downloads.add(1, {"mode": mode, "outcome": "invalid_url"})
+        await message.reply_text(
             "Invalid URL. Please send a valid video URL",
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return
 
-    link_domain_total.inc({"domain": urlparse(url).netloc})
+    url = match.group(0)
+    domain = telemetry.bucket_domain(urlparse(url).netloc)
+    attrs = {"mode": mode, "domain": domain}
 
-    filepath = os.path.join(TMP_DIR, uuid.uuid4().hex + file_extention)
-    progress_msg = await update.message.reply_text(
-        "⬇️ Downloading...",
-        reply_to_message_id=update.message.message_id,
+    progress = await message.reply_text(
+        "⬇️ Downloading...", reply_to_message_id=message.message_id
+    )
+    workdir = tempfile.mkdtemp(dir=TMP_DIR)
+    started = time.monotonic()
+    telemetry.in_flight.add(1, {"mode": mode})
+
+    try:
+        with telemetry.tracer.start_as_current_span("handle_url") as span:
+            span.set_attribute("download.mode", mode)
+            span.set_attribute("url.domain", domain)
+
+            async with _slots:
+                outcome = await _download_and_send(
+                    message, progress, url, fmt, mode, workdir, span
+                )
+
+            span.set_attribute("download.outcome", outcome)
+        telemetry.downloads.add(1, {**attrs, "outcome": outcome})
+    except Exception:
+        telemetry.downloads.add(1, {**attrs, "outcome": "error"})
+        LOG.exception("failed to handle %s", url)
+        with contextlib.suppress(TelegramError):
+            await progress.edit_text("🚫 Sorry, mate, seems I shat my pants on that one")
+    finally:
+        telemetry.in_flight.add(-1, {"mode": mode})
+        telemetry.download_duration.record(time.monotonic() - started, {"mode": mode})
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -> str:
+    """Returns the outcome label. Raises on unexpected failure."""
+    loop = asyncio.get_running_loop()
+
+    info = await loop.run_in_executor(_pool, _probe, url, fmt) or {}
+    estimated = info.get("filesize") or info.get("filesize_approx") or 0
+    span.set_attribute("download.estimated_bytes", estimated)
+
+    # Only trust the estimate to reject early -- never to skip the real check.
+    if estimated > MAX_TG_FILE_SIZE:
+        await _reject_too_large(progress, estimated)
+        return "too_large"
+
+    hook = _progress_hook(progress, loop)
+    await loop.run_in_executor(_pool, _download, url, fmt, mode, workdir, hook)
+
+    path = _downloaded_file(workdir)
+    if path is None:
+        raise RuntimeError(f"yt-dlp produced no file in {workdir}")
+
+    size = os.path.getsize(path)
+    span.set_attribute("download.actual_bytes", size)
+    if size > MAX_TG_FILE_SIZE:
+        await _reject_too_large(progress, size)
+        return "too_large"
+
+    await progress.edit_text("⬆️ Uploading...")
+    with open(path, "rb") as f:
+        if mode == "audio":
+            await message.reply_audio(audio=f, reply_to_message_id=message.message_id)
+        else:
+            await message.reply_video(video=f, reply_to_message_id=message.message_id)
+    with contextlib.suppress(TelegramError):
+        await progress.delete()
+    return "ok"
+
+
+async def _reject_too_large(progress, size: int) -> None:
+    await progress.edit_text(
+        f"🚫 File size is {size // 1024 // 1024}MB, which is over "
+        f"Telegram's limit for bots ({MAX_TG_FILE_SIZE // 1024 // 1024}MB)"
     )
 
-    loop = asyncio.get_event_loop()
 
-    prev_percent = 0
+def _progress_hook(progress, loop):
+    """Throttled by both percentage and wall time, to stay under Telegram's edit limits."""
+    state = {"pct": -100, "at": 0.0}
 
-    def _update_filepath(d):
-        nonlocal filepath
-        if d["info_dict"]["filepath"]:
-            filepath = d["info_dict"]["filepath"]
+    def hook(d):
+        if d.get("status") != "downloading":
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        if not total:
+            return
+        pct = int(d.get("downloaded_bytes", 0) / total * 100)
+        now = time.monotonic()
+        if pct - state["pct"] < 10 or now - state["at"] < 3:
+            return
+        state["pct"], state["at"] = pct, now
+        asyncio.run_coroutine_threadsafe(_edit(progress, f"⬇️ Downloading... ({pct}%)"), loop)
 
-    def _update_progress_msg(d):
-        nonlocal prev_percent
-        if d["status"] == "downloading":
-            downloaded = d.get("downloaded_bytes", 0)
-            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
-            percent = int(downloaded / total * 100 if total else 0)
-            if percent - prev_percent < 5:
-                return
-            prev_percent = percent
-            new_text = f"⬇️ Downloading... ({percent}%)"
-            asyncio.run_coroutine_threadsafe(progress_msg.edit_text(new_text), loop)
-
-    def _get_info(url_: str) -> dict:
-        with yt_dlp.YoutubeDL({"quiet": True, "format": yt_dl_format}) as ydl:
-            return ydl.extract_info(url_, download=False)
-
-    def _download(url_: str):
-        yt_dlp_options = {
-            "outtmpl": filepath,
-            "format": yt_dl_format,
-            "postprocessors": [
-                {
-                    "key": "FFmpegVideoConvertor",
-                    "preferedformat": "mp4",
-                }
-            ],
-            "progress_hooks": [_update_progress_msg],
-            "postprocessor_hooks": [_update_filepath],
-            "quiet": True,
-        }
-        if download_mode == "audio":
-            yt_dlp_options["postprocessors"] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        with yt_dlp.YoutubeDL(
-            yt_dlp_options
-        ) as ydl:
-            ydl.download([url_])
-
-    with ThreadPoolExecutor() as pool:
-        try:
-            info = await loop.run_in_executor(pool, _get_info, url) or {}
-
-            file_size = info.get("filesize", 0) or info.get("filesize_approx", 0) or 0
-
-            if not file_size:
-                await loop.run_in_executor(pool, _download, url)
-                file_size = os.path.getsize(filepath)
-
-            if file_size > MAX_TG_FILE_SIZE:
-                file_size_mb = int(file_size / 1024 / 1024)
-                await update.message.reply_text(
-                    f"🚫 File size is {file_size_mb}MB, which is over Telegram's limit for bots (50MB)"
-                )
-                filesize_limit_exceeded_total.inc({})
-                return
-
-            if not os.path.exists(filepath):
-                await loop.run_in_executor(pool, _download, url)
-        except Exception as e:
-            unknown_error_total.inc({})
-            await progress_msg.edit_text(
-                f"🚫 Sorry, mate, seems I shat my pants on that one"
-            )
-            raise
-
-    await progress_msg.edit_text("⬆️ Uploading...")
-
-    with open(filepath, "rb") as f:
-        if download_mode == 'video': 
-            await update.message.reply_video(
-                video=f,
-                reply_to_message_id=update.message.message_id,
-            )
-        elif download_mode == 'audio':
-            await update.message.reply_audio(
-                audio=f,
-                reply_to_message_id=update.message.message_id,
-            )
-    await progress_msg.delete()
-    os.remove(filepath)
+    return hook
 
 
-async def clean_old_files():
+async def _edit(progress, text: str) -> None:
+    # Edits race with the upload finishing and with Telegram's flood limits;
+    # neither is worth failing a download over.
+    with contextlib.suppress(TelegramError):
+        await progress.edit_text(text)
+
+
+def _probe(url: str, fmt: str) -> dict:
+    with yt_dlp.YoutubeDL({"quiet": True, "format": fmt, "noprogress": True}) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def _download(url: str, fmt: str, mode: str, workdir: str, hook) -> None:
+    options = {
+        # Each download gets its own directory, so the produced file can just be
+        # discovered afterwards instead of tracked through postprocessor hooks.
+        "outtmpl": os.path.join(workdir, "%(title).80B.%(ext)s"),
+        "format": fmt,
+        "progress_hooks": [hook],
+        "quiet": True,
+        "noprogress": True,
+        "postprocessors": [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
+        ]
+        if mode == "audio"
+        else [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+
+def _downloaded_file(workdir: str) -> str | None:
+    candidates = [
+        os.path.join(workdir, name)
+        for name in os.listdir(workdir)
+        if not name.endswith(".part")
+    ]
+    candidates = [p for p in candidates if os.path.isfile(p)]
+    if not candidates:
+        return None
+    # Postprocessing can leave the pre-conversion input behind; the payload is
+    # always the largest file.
+    return max(candidates, key=os.path.getsize)
+
+
+async def clean_orphans() -> None:
     while True:
-        now = time.time()
-        for filename in os.listdir(TMP_DIR):
-            if filename == ".gitkeep":
-                continue
-            filepath = os.path.join(TMP_DIR, filename)
-            stat = os.stat(filepath)
-            if (now - stat.st_mtime) > timedelta(minutes=1).total_seconds():
-                os.unlink(filepath)
-        await asyncio.sleep(timedelta(minutes=2).total_seconds())
+        try:
+            cutoff = time.time() - ORPHAN_TTL.total_seconds()
+            for name in os.listdir(TMP_DIR):
+                if name == ".gitkeep":
+                    continue
+                path = os.path.join(TMP_DIR, name)
+                try:
+                    if os.stat(path).st_mtime > cutoff:
+                        continue
+                except FileNotFoundError:
+                    continue
+                LOG.info("removing orphaned %s", path)
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    with contextlib.suppress(OSError):
+                        os.unlink(path)
+        except Exception:
+            # A janitor crash used to kill the task silently and leak disk forever.
+            LOG.exception("janitor pass failed")
+        await asyncio.sleep(JANITOR_INTERVAL.total_seconds())
 
 
-def is_url(url: str) -> bool:
-    return bool(re.search(URL_RE, url))
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    LOG.error("unhandled error", exc_info=context.error)
 
 
 if __name__ == "__main__":

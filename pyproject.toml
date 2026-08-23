@@ -1,12 +1,14 @@
 [project]
 name = "tg-yt-dlp"
 version = "0.1.0"
-description = "Add your description here"
+description = "Telegram bot that wraps yt-dlp"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.11.13",
-    "aioprometheus>=23.12.0",
+    "opentelemetry-api>=1.30.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.30.0",
+    "opentelemetry-sdk>=1.30.0",
     "python-telegram-bot>=21.10",
     "yt-dlp>=2025.2.19",
 ]

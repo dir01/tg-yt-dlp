@@ -100,20 +100,29 @@ downloads = _meter.create_counter(
     "tg_yt_dlp.downloads",
     description="Download attempts, by mode/outcome/domain, and error.type for errors",
 )
+# Explicit buckets: the SDK default (0 to 10000) puts every size in +Inf and
+# almost every slot wait in the first bucket.
+_MB = 1024 * 1024
+
 download_duration = _meter.create_histogram(
     "tg_yt_dlp.download.duration",
     unit="s",
     description="Time from a free download slot to the end of the request, by mode/outcome",
+    explicit_bucket_boundaries_advisory=[1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200],
 )
 slot_wait = _meter.create_histogram(
     "tg_yt_dlp.download.slot_wait",
     unit="s",
     description="Time that a request waited for a free download slot, by mode",
+    explicit_bucket_boundaries_advisory=[0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600],
 )
 download_size = _meter.create_histogram(
     "tg_yt_dlp.download.size",
     unit="By",
     description="Size of the downloaded file before the size check, by mode",
+    explicit_bucket_boundaries_advisory=[
+        n * _MB for n in (1, 5, 10, 20, 50, 100, 200, 500, 1000, 1500, 2000)
+    ],
 )
 in_flight = _meter.create_up_down_counter(
     "tg_yt_dlp.downloads.in_flight",

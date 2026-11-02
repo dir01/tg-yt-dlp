@@ -76,6 +76,9 @@ def test_successful_download(sample_url):
         assert "error.type" not in point.attributes
     [size] = _points("tg_yt_dlp.download.size")
     assert size.sum > 1000
+    assert size.explicit_bounds[-1] == 2000 * 1024 * 1024
+    [wait] = _points("tg_yt_dlp.download.slot_wait")
+    assert wait.explicit_bounds[0] == 0.1
     assert _points("tg_yt_dlp.download.slot_wait")
 
 
@@ -89,6 +92,7 @@ def test_download_error(monkeypatch):
     root = next(s for s in _spans.get_finished_spans() if s.name == "handle_url")
     assert root.attributes["error.type"] == "format"
     assert root.status.status_code == trace.StatusCode.ERROR
+    assert root.status.description.startswith("DownloadError: ERROR: [Instagram]")
 
     # The reader is cumulative, so select the points of this test.
     [count] = [p for p in _points("tg_yt_dlp.downloads") if p.attributes["outcome"] == "error"]

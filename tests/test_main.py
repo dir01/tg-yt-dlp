@@ -207,6 +207,12 @@ def test_refused_file_id_downloads_again(sample_url, tmp_path, count_extractions
         ("ERROR: [Instagram] x: Instagram sent an empty media response. Use --cookies", "login_required"),
         ("ERROR: [youtube] x: Sign in to confirm you're not a bot", "login_required"),
         ("ERROR: [youtube] x: Video unavailable", "unavailable"),
+        (
+            "ERROR: [Instagram] x: This content isn't available to everyone: "
+            "It can't be seen by certain audiences.",
+            "login_required",
+        ),
+        ("ERROR: [twitter] 1: No video could be found in this tweet", "no_media"),
         ("ERROR: unable to download webpage: HTTP Error 429: Too Many Requests", "rate_limited"),
         ("ERROR: Unsupported URL: https://example.com", "unsupported"),
         ("ERROR: something new", "download_other"),

@@ -16,7 +16,8 @@ from urllib.parse import urlparse
 
 import yt_dlp
 from aiohttp import web
-from telegram import Update
+from telegram import MessageEntity, Update
+from telegram.constants import ChatType
 from opentelemetry.trace import Status, StatusCode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
@@ -147,15 +148,58 @@ def main():
             .local_mode(TELEGRAM_LOCAL_MODE)
         )
     app = builder.build()
-    app.add_handler(CommandHandler("help", handle_help))
-    app.add_handler(CommandHandler("start", handle_help))
-    app.add_handler(CommandHandler("audio", handle_url))
-    app.add_handler(MessageHandler(filters=filters.TEXT & ~filters.COMMAND, callback=handle_url))
+    for handler in _handlers():
+        app.add_handler(handler)
     app.add_error_handler(handle_error)
 
     # run_polling installs its own SIGINT/SIGTERM handlers and drives shutdown
     # through post_shutdown, so there is nothing to unwind here.
-    app.run_polling()
+    # Explicit: without it, Telegram uses the list from the previous call.
+    app.run_polling(allowed_updates=[Update.MESSAGE, Update.CHANNEL_POST])
+
+
+def _handlers() -> list:
+    private = filters.ChatType.PRIVATE
+    # New messages and channel posts only: an edit must not start a second download.
+    new = filters.UpdateType.MESSAGE | filters.UpdateType.CHANNEL_POST
+    # In channels and groups the bot is silent, and most posts have no link, so
+    # only posts with a link (also in a caption, also a hidden link) get through.
+    has_link = (
+        filters.Entity(MessageEntity.URL)
+        | filters.Entity(MessageEntity.TEXT_LINK)
+        | filters.CaptionEntity(MessageEntity.URL)
+        | filters.CaptionEntity(MessageEntity.TEXT_LINK)
+    )
+    return [
+        CommandHandler("help", handle_help, filters=private),
+        CommandHandler("start", handle_help, filters=private),
+        CommandHandler("audio", handle_url, filters=new),
+        MessageHandler(private & new & filters.TEXT & ~filters.COMMAND, handle_url),
+        MessageHandler(~private & new & has_link & ~filters.COMMAND, handle_url),
+    ]
+
+
+class _NoProgress:
+    """The progress message in silent mode: it shows nothing."""
+
+    async def edit_text(self, text):
+        pass
+
+    async def delete(self):
+        pass
+
+
+def _find_url(message, text: str) -> str | None:
+    # Match the URL out of the message rather than assuming the whole message is
+    # one, so "look at this <url>" works.
+    match = URL_RE.search(text)
+    if match:
+        return match.group(0)
+    # A hidden link: the text shows a word, and the URL is only in the entity.
+    for entity in (message.entities or ()) + (message.caption_entities or ()):
+        if entity.type == MessageEntity.TEXT_LINK and entity.url:
+            return entity.url
+    return None
 
 
 async def _post_init(app) -> None:
@@ -203,12 +247,16 @@ def _health_app(poll_tracker: PollTracker) -> web.Application:
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(HELP_TEXT)
+    await update.effective_message.reply_text(HELP_TEXT)
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
-    text = message.text or ""
+    message = update.effective_message
+    text = message.text or message.caption or ""
+    # In channels and groups the bot says nothing. It only replies with the
+    # file, and with "Uploading..." after a successful download.
+    silent = message.chat.type != ChatType.PRIVATE
+    chat_type = message.chat.type
 
     if text.startswith("/audio"):
         mode, fmt = "audio", AUDIO_FORMAT
@@ -216,30 +264,34 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     else:
         mode, fmt = "video", VIDEO_FORMAT
 
-    # Match the URL out of the message rather than assuming the whole message is
-    # one, so "look at this <url>" works.
-    match = URL_RE.search(text)
-    if not match:
-        telemetry.downloads.add(1, {"mode": mode, "outcome": "invalid_url"})
-        await message.reply_text(
-            "Invalid URL. Please send a valid video URL",
-            reply_to_message_id=message.message_id,
+    url = _find_url(message, text)
+    if url is None:
+        telemetry.downloads.add(
+            1, {"mode": mode, "outcome": "invalid_url", "chat.type": chat_type}
         )
+        if not silent:
+            await message.reply_text(
+                "Invalid URL. Please send a valid video URL",
+                reply_to_message_id=message.message_id,
+            )
         return
 
-    url = match.group(0)
     domain = telemetry.bucket_domain(urlparse(url).netloc)
-    attrs = {"mode": mode, "domain": domain}
+    attrs = {"mode": mode, "domain": domain, "chat.type": chat_type}
 
-    progress = await message.reply_text(
-        "⬇️ Downloading...", reply_to_message_id=message.message_id
-    )
+    if silent:
+        progress = _NoProgress()
+    else:
+        progress = await message.reply_text(
+            "⬇️ Downloading...", reply_to_message_id=message.message_id
+        )
     workdir = tempfile.mkdtemp(dir=TMP_DIR)
     outcome, error_type, started = "error", None, None
 
     with telemetry.tracer.start_as_current_span("handle_url") as span:
         span.set_attribute("download.mode", mode)
         span.set_attribute("url.domain", domain)
+        span.set_attribute("chat.type", chat_type)
         try:
             # The duration starts when a slot is free. The wait is a separate metric.
             telemetry.waiting.add(1, {"mode": mode})
@@ -255,7 +307,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             telemetry.in_flight.add(1, {"mode": mode})
             try:
                 outcome = await _download_and_send(
-                    message, progress, url, fmt, mode, workdir, span
+                    message, progress, url, fmt, mode, workdir, span, silent
                 )
             finally:
                 telemetry.in_flight.add(-1, {"mode": mode})
@@ -286,8 +338,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # messages. The result is a metric attribute, so keep the set small.
 _ERROR_PATTERNS = (
     ("format", ("requested format is not available", "no video formats found")),
+    # A post with a link but no video. Normal in silent mode.
+    ("no_media", ("no video could be found", "no media found", "there is no video", "no video in")),
     ("rate_limited", ("http error 429", "too many requests", "rate-limit", "rate limit")),
-    ("login_required", ("sign in", "log in", "login", "cookies", "private", "age-restricted")),
+    ("login_required", (
+        "sign in", "log in", "login", "cookies", "private", "age-restricted",
+        # Instagram: "This content isn't available to everyone: It can't be
+        # seen by certain audiences."
+        "available to everyone", "certain audiences",
+    )),
     ("unavailable", ("unavailable", "removed", "deleted", "does not exist", "not found", "404")),
     ("unsupported", ("unsupported url",)),
 )
@@ -306,7 +365,9 @@ def classify_error(exc: BaseException) -> str:
     return "other"
 
 
-async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -> str:
+async def _download_and_send(
+    message, progress, url, fmt, mode, workdir, span, silent=False
+) -> str:
     """Returns the outcome label. Raises on unexpected failure."""
     loop = asyncio.get_running_loop()
 
@@ -350,13 +411,26 @@ async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -
     with telemetry.tracer.start_as_current_span("media_meta"):
         meta = await loop.run_in_executor(_pool, _media_meta, path, mode, info, workdir)
 
-    await progress.edit_text("⬆️ Uploading...")
+    if silent:
+        # The only message in silent mode, and only after a successful download.
+        # It is deleted after the upload, also when the upload fails.
+        progress = await message.reply_text(
+            "⬆️ Uploading...", reply_to_message_id=message.message_id
+        )
+    else:
+        await progress.edit_text("⬆️ Uploading...")
     if TELEGRAM_LOCAL_MODE:
         # The local server reads the file itself; it runs as a different user.
         os.chmod(workdir, 0o755)
-    with telemetry.tracer.start_as_current_span("upload") as upload:
-        upload.set_attribute("download.actual_bytes", size)
-        sent = await _send(message, mode, Path(path), **meta)
+    try:
+        with telemetry.tracer.start_as_current_span("upload") as upload:
+            upload.set_attribute("download.actual_bytes", size)
+            sent = await _send(message, mode, Path(path), **meta)
+    except Exception:
+        if silent:
+            with contextlib.suppress(TelegramError):
+                await progress.delete()
+        raise
     file_id = _sent_file_id(sent)
     if file_id:
         for key in (url_key, id_key):

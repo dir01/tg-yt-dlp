@@ -27,7 +27,7 @@ traceback is one record.
 
 | Metric | Type | Attributes |
 | --- | --- | --- |
-| `tg_yt_dlp.downloads` | counter | `mode`, `domain`, `outcome`, `error.type` (errors only) |
+| `tg_yt_dlp.downloads` | counter | `mode`, `domain`, `chat.type`, `outcome`, `error.type` (errors only) |
 | `tg_yt_dlp.download.duration` | histogram, s | `mode`, `outcome`, `error.type` (errors only). Starts when a slot is free |
 | `tg_yt_dlp.download.slot_wait` | histogram, s | `mode` |
 | `tg_yt_dlp.download.size` | histogram, By | `mode` |
@@ -37,8 +37,9 @@ traceback is one record.
 | `tg_yt_dlp.build.timestamp` | gauge, s | Unix time of the image build |
 
 `outcome` is `ok`, `cached`, `too_large`, `invalid_url` or `error`. `error.type` is `format`,
-`rate_limited`, `login_required`, `unavailable`, `unsupported`, `download_other`, `telegram` or
-`other`.
+`no_media`, `rate_limited`, `login_required`, `unavailable`, `unsupported`, `download_other`,
+`telegram` or `other`. `tg_yt_dlp.downloads` also has `chat.type`: `private`, `group`,
+`supergroup` or `channel`.
 
 Each request has a `handle_url` span with the child spans `wait_slot`, `probe`, `download`,
 `media_meta`, `upload`, or `send_cached` for a cached file.
@@ -66,6 +67,19 @@ local `uv run` to the same version the image ships.
 | `TMP_DIR` | `./tmp` | Scratch space for downloads |
 | `HEALTH_PORT` | `9100` | Health endpoint port |
 | `LOG_LEVEL` | `INFO` | Python log level |
+
+## Channels and groups
+In a channel or a group, the bot is silent. It reads each new post that has a link (also a link in a
+caption, and a hidden link). When the download succeeds, it replies "⬆️ Uploading..." to the post,
+sends the file as a reply, and deletes the "Uploading..." message. When the download fails, the
+link has no video, or the file is too large, it says nothing. It ignores `/help` and `/start` there.
+`/audio <link>` works in all chats.
+
+- **Channel:** add the bot as an admin with the right to post messages.
+- **Group:** the bot sees normal messages only when it is an admin, or when privacy mode is off
+  (BotFather: `/setprivacy` → Disable). Without this, the bot sees only commands.
+
+Errors in silent mode still go to the logs, spans and metrics (attribute `chat.type`).
 
 ## Files larger than 50 MB
 The cloud Bot API accepts uploads up to 50 MB. A local

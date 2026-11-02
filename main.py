@@ -340,7 +340,12 @@ _ERROR_PATTERNS = (
     # A post with a link but no video. Normal in silent mode.
     ("no_media", ("no video could be found", "no media found", "there is no video", "no video in")),
     ("rate_limited", ("http error 429", "too many requests", "rate-limit", "rate limit")),
-    ("login_required", ("sign in", "log in", "login", "cookies", "private", "age-restricted")),
+    ("login_required", (
+        "sign in", "log in", "login", "cookies", "private", "age-restricted",
+        # Instagram: "This content isn't available to everyone: It can't be
+        # seen by certain audiences."
+        "available to everyone", "certain audiences",
+    )),
     ("unavailable", ("unavailable", "removed", "deleted", "does not exist", "not found", "404")),
     ("unsupported", ("unsupported url",)),
 )

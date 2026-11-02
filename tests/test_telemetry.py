@@ -27,11 +27,16 @@ metrics.set_meter_provider(MeterProvider(metric_readers=[_reader]))
 
 
 class FakeUpdateMessage(FakeMessage):
-    def __init__(self, text):
+    def __init__(self, text, chat_type="private"):
         super().__init__()
         self.text = text
+        self.caption = None
+        self.entities = self.caption_entities = ()
+        self.chat = SimpleNamespace(type=chat_type)
+        self.texts = []
 
     async def reply_text(self, text, **kwargs):
+        self.texts.append(text)
         return FakeProgress()
 
 
@@ -42,9 +47,10 @@ def clean(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "TMP_DIR", str(tmp_path))
 
 
-def _handle(text):
-    update = SimpleNamespace(message=FakeUpdateMessage(text))
-    asyncio.run(main.handle_url(update, None))
+def _handle(text, chat_type="private"):
+    message = FakeUpdateMessage(text, chat_type)
+    asyncio.run(main.handle_url(SimpleNamespace(effective_message=message), None))
+    return message
 
 
 def _points(name):
@@ -97,8 +103,34 @@ def test_download_error(monkeypatch):
         "domain": "instagram.com",
         "outcome": "error",
         "error.type": "format",
+        "chat.type": "private",
     }
     [duration] = [
         p for p in _points("tg_yt_dlp.download.duration") if p.attributes["outcome"] == "error"
     ]
     assert duration.attributes["error.type"] == "format"
+
+
+@needs_ffmpeg
+def test_silent_mode_says_only_uploading(sample_url):
+    message = _handle(f"look {sample_url}", chat_type="channel")
+    assert message.texts == ["⬆️ Uploading..."]
+    assert len(message.sent) == 1
+
+
+def test_silent_mode_says_nothing_on_error(monkeypatch):
+    def fail(url, fmt):
+        raise yt_dlp.utils.DownloadError("ERROR: [twitter] 1: No video could be found in this tweet")
+
+    monkeypatch.setattr(main, "_probe", fail)
+    message = _handle("https://x.com/a/status/1", chat_type="supergroup")
+    assert message.texts == [] and message.sent == []
+    root = next(s for s in _spans.get_finished_spans() if s.name == "handle_url")
+    assert root.attributes["error.type"] == "no_media"
+    assert root.attributes["chat.type"] == "supergroup"
+
+
+def test_silent_mode_says_nothing_when_too_large(monkeypatch):
+    monkeypatch.setattr(main, "_probe", lambda url, fmt: {"filesize": main.MAX_TG_FILE_SIZE + 1})
+    message = _handle("https://x.com/a/status/1", chat_type="channel")
+    assert message.texts == [] and message.sent == []

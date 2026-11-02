@@ -28,7 +28,7 @@ jobs:
 
       # Pinned to an exact version on purpose: setup-uv stopped publishing
       # moving major tags after v8, so @v10 does not exist.
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
 

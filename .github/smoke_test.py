@@ -6,8 +6,9 @@ touched, so this test can only fail for reasons that are actually yt-dlp's
 fault -- no third-party host going 403, no CI IP getting bot-blocked.
 
 What it covers: the package imports, the generic extractor works, both of the
-bot's format selectors resolve, the downloader writes a file, and the ffmpeg
-postprocessor chain (mp4 remux, mp3 extraction) still runs.
+bot's format selectors resolve, the downloader writes a file from the info of an
+earlier extraction, and the ffmpeg postprocessor chain (mp4 remux, mp3
+extraction) still runs.
 
 What it does not cover: site-specific extractors. Testing those from CI means
 depending on hosts that block datacenter IPs, which produces false failures
@@ -72,8 +73,12 @@ def run_case(url: str, name: str, fmt: str, postprocessors: list) -> None:
             "quiet": True,
             "noprogress": True,
         }
+        # The same two steps as the bot: extract once, then download from that
+        # info without a second extraction.
+        with yt_dlp.YoutubeDL({"quiet": True, "format": fmt, "noprogress": True}) as ydl:
+            info = ydl.sanitize_info(ydl.extract_info(url, download=False))
         with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([url])
+            ydl.process_ie_result(info, download=True)
 
         files = [f for f in os.listdir(workdir) if not f.endswith(".part")]
         if not files:

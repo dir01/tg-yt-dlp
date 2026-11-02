@@ -18,6 +18,11 @@ permissions:
   pull-requests: write
   packages: read
 
+env:
+  # frozenlist 1.8.0 has no Python 3.15 wheels. Use its pure-Python version,
+  # the same as the Dockerfile.
+  FROZENLIST_NO_EXTENSIONS: "1"
+
 jobs:
   bump:
     name: Bump yt-dlp

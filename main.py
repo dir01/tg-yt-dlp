@@ -124,6 +124,9 @@ def main():
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # httpx logs each request URL at INFO, and the Bot API URL contains the bot
+    # token. It also adds a line every 10 seconds for getUpdates.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     telemetry.setup()
     os.makedirs(TMP_DIR, exist_ok=True)
 

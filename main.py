@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import yt_dlp
 from aiohttp import web
 from telegram import Update
+from opentelemetry.trace import Status, StatusCode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     ApplicationBuilder,
@@ -128,6 +129,7 @@ def main():
     # token. It also adds a line every 10 seconds for getUpdates.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     telemetry.setup()
+    telemetry.observe_poll_age(lambda: time.monotonic() - _poll_tracker.last_ok)
     os.makedirs(TMP_DIR, exist_ok=True)
 
     builder = (
@@ -197,15 +199,10 @@ def _health_app(poll_tracker: PollTracker) -> web.Application:
 
     app = web.Application()
     app.router.add_get("/health", health)
-    # Kept so the existing k8s probes (which point at /metrics from the
-    # aioprometheus days) keep passing through the rollout. Remove once the
-    # deployment manifest has moved to /health.
-    app.router.add_get("/metrics", health)
     return app
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    telemetry.messages.add(1, {"handler": "help"})
     await update.message.reply_text(HELP_TEXT)
 
 
@@ -218,7 +215,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         text = text[len("/audio"):]
     else:
         mode, fmt = "video", VIDEO_FORMAT
-    telemetry.messages.add(1, {"handler": mode})
 
     # Match the URL out of the message rather than assuming the whole message is
     # one, so "look at this <url>" works.
@@ -239,30 +235,74 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "⬇️ Downloading...", reply_to_message_id=message.message_id
     )
     workdir = tempfile.mkdtemp(dir=TMP_DIR)
-    started = time.monotonic()
-    telemetry.in_flight.add(1, {"mode": mode})
+    outcome, error_type, started = "error", None, None
 
-    try:
-        with telemetry.tracer.start_as_current_span("handle_url") as span:
-            span.set_attribute("download.mode", mode)
-            span.set_attribute("url.domain", domain)
+    with telemetry.tracer.start_as_current_span("handle_url") as span:
+        span.set_attribute("download.mode", mode)
+        span.set_attribute("url.domain", domain)
+        try:
+            # The duration starts when a slot is free. The wait is a separate metric.
+            telemetry.waiting.add(1, {"mode": mode})
+            try:
+                with telemetry.tracer.start_as_current_span("wait_slot"):
+                    wait_started = time.monotonic()
+                    await _slots.acquire()
+            finally:
+                telemetry.waiting.add(-1, {"mode": mode})
+            telemetry.slot_wait.record(time.monotonic() - wait_started, {"mode": mode})
 
-            async with _slots:
+            started = time.monotonic()
+            telemetry.in_flight.add(1, {"mode": mode})
+            try:
                 outcome = await _download_and_send(
                     message, progress, url, fmt, mode, workdir, span
                 )
-
+            finally:
+                telemetry.in_flight.add(-1, {"mode": mode})
+                _slots.release()
+        except Exception as exc:
+            error_type = classify_error(exc)
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR))
+            LOG.exception("failed to handle %s (%s)", url, error_type)
+            with contextlib.suppress(TelegramError):
+                await progress.edit_text("🚫 Sorry, mate, seems I shat my pants on that one")
+        finally:
             span.set_attribute("download.outcome", outcome)
-        telemetry.downloads.add(1, {**attrs, "outcome": outcome})
-    except Exception:
-        telemetry.downloads.add(1, {**attrs, "outcome": "error"})
-        LOG.exception("failed to handle %s", url)
-        with contextlib.suppress(TelegramError):
-            await progress.edit_text("🚫 Sorry, mate, seems I shat my pants on that one")
-    finally:
-        telemetry.in_flight.add(-1, {"mode": mode})
-        telemetry.download_duration.record(time.monotonic() - started, {"mode": mode})
-        shutil.rmtree(workdir, ignore_errors=True)
+            result = {"outcome": outcome}
+            if error_type:
+                span.set_attribute("error.type", error_type)
+                result["error.type"] = error_type
+            telemetry.downloads.add(1, {**attrs, **result})
+            if started is not None:
+                telemetry.download_duration.record(
+                    time.monotonic() - started, {"mode": mode, **result}
+                )
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+# Ordered: the first match wins. The texts come from yt-dlp DownloadError
+# messages. The result is a metric attribute, so keep the set small.
+_ERROR_PATTERNS = (
+    ("format", ("requested format is not available", "no video formats found")),
+    ("rate_limited", ("http error 429", "too many requests", "rate-limit", "rate limit")),
+    ("login_required", ("sign in", "log in", "login", "cookies", "private", "age-restricted")),
+    ("unavailable", ("unavailable", "removed", "deleted", "does not exist", "not found", "404")),
+    ("unsupported", ("unsupported url",)),
+)
+
+
+def classify_error(exc: BaseException) -> str:
+    """A low-cardinality label for an exception, for metrics and spans."""
+    if isinstance(exc, TelegramError):
+        return "telegram"
+    if isinstance(exc, yt_dlp.utils.DownloadError):
+        text = str(exc).lower()
+        for label, needles in _ERROR_PATTERNS:
+            if any(needle in text for needle in needles):
+                return label
+        return "download_other"
+    return "other"
 
 
 async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -> str:
@@ -273,7 +313,10 @@ async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -
     if await _send_cached(message, progress, url_key, mode):
         return "cached"
 
-    info = await loop.run_in_executor(_pool, _probe, url, fmt) or {}
+    # Spans go around the awaits, not into the pool threads, so the context
+    # does not need to go to the threads.
+    with telemetry.tracer.start_as_current_span("probe"):
+        info = await loop.run_in_executor(_pool, _probe, url, fmt) or {}
     # The same video can have many URLs (youtu.be, m.youtube.com, &t=...).
     id_key = (mode, f"{info.get('extractor_key')}:{info.get('id')}") if info.get("id") else None
     if id_key and await _send_cached(message, progress, id_key, mode):
@@ -289,7 +332,8 @@ async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -
         return "too_large"
 
     hook = _progress_hook(progress, loop)
-    await loop.run_in_executor(_pool, _download, info, fmt, mode, workdir, hook)
+    with telemetry.tracer.start_as_current_span("download"):
+        await loop.run_in_executor(_pool, _download, info, fmt, mode, workdir, hook)
 
     path = _downloaded_file(workdir)
     if path is None:
@@ -297,17 +341,21 @@ async def _download_and_send(message, progress, url, fmt, mode, workdir, span) -
 
     size = os.path.getsize(path)
     span.set_attribute("download.actual_bytes", size)
+    telemetry.download_size.record(size, {"mode": mode})
     if size > MAX_TG_FILE_SIZE:
         await _reject_too_large(progress, size)
         return "too_large"
 
-    meta = await loop.run_in_executor(_pool, _media_meta, path, mode, info, workdir)
+    with telemetry.tracer.start_as_current_span("media_meta"):
+        meta = await loop.run_in_executor(_pool, _media_meta, path, mode, info, workdir)
 
     await progress.edit_text("⬆️ Uploading...")
     if TELEGRAM_LOCAL_MODE:
         # The local server reads the file itself; it runs as a different user.
         os.chmod(workdir, 0o755)
-    sent = await _send(message, mode, Path(path), **meta)
+    with telemetry.tracer.start_as_current_span("upload") as upload:
+        upload.set_attribute("download.actual_bytes", size)
+        sent = await _send(message, mode, Path(path), **meta)
     file_id = _sent_file_id(sent)
     if file_id:
         for key in (url_key, id_key):
@@ -323,7 +371,8 @@ async def _send_cached(message, progress, key, mode) -> bool:
     if file_id is None:
         return False
     try:
-        await _send(message, mode, file_id)
+        with telemetry.tracer.start_as_current_span("send_cached"):
+            await _send(message, mode, file_id)
     except BadRequest:
         # Telegram can forget a file_id. Then download the file again.
         LOG.warning("cached file_id for %s was refused, downloading again", key)

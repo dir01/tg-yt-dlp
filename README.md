@@ -26,7 +26,7 @@ days to catch a stalled release pipeline.
 `getUpdates` call for `MAX_POLL_AGE_SECONDS`, so a liveness probe restarts a bot that cannot poll.
 
 ## Runtime
-Python 3.14 on Alpine, built in two stages: the compiler toolchain lives in the builder and only the
+Python 3.15 on Alpine, built in two stages: the compiler toolchain lives in the builder and only the
 resulting virtualenv, ffmpeg, and the two source files are copied into the image, which runs as an
 unprivileged user. Dependencies are locked in `uv.lock`; `.python-version` pins the interpreter for
 local `uv run` to the same version the image ships.

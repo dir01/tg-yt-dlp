@@ -2,17 +2,20 @@
 # pinned and skips a pip install on every build.
 FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
 
-# Keep the Python minor version equal to .python-version. A new minor version
-# often has no musl wheels for frozenlist, multidict and propcache yet, so they
-# compile from source, and the build becomes many times slower.
-FROM python:3.14.10-alpine3.24 AS builder
+# Keep the Python minor version equal to .python-version. Before you change it,
+# make sure that each compiled dependency has musl wheels for the new version.
+# Without wheels, the package compiles from source, and the build is much slower.
+FROM python:3.15.2-alpine3.24 AS builder
 
 # The toolchain is only needed to build wheels that have no musl release. It
 # stays in this stage and never reaches the image that ships.
 RUN apk add --no-cache gcc musl-dev libffi-dev
 COPY --from=uv /uv /usr/local/bin/uv
 
-ENV UV_COMPILE_BYTECODE=1 \
+# frozenlist 1.8.0 has no Python 3.15 wheels. Install its pure-Python version
+# and do not compile it. aiohttp uses it only for signal lists.
+ENV FROZENLIST_NO_EXTENSIONS=1 \
+    UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
@@ -21,7 +24,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 
-FROM python:3.14.10-alpine3.24
+FROM python:3.15.2-alpine3.24
 
 RUN apk add --no-cache ffmpeg
 

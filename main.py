@@ -263,7 +263,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         except Exception as exc:
             error_type = classify_error(exc)
             span.record_exception(exc)
-            span.set_status(Status(StatusCode.ERROR))
+            # The reason also on the root span, so a list of failed requests shows it.
+            span.set_status(Status(StatusCode.ERROR, f"{type(exc).__name__}: {exc}"[:300]))
             LOG.exception("failed to handle %s (%s)", url, error_type)
             with contextlib.suppress(TelegramError):
                 await progress.edit_text("🚫 Sorry, mate, seems I shat my pants on that one")

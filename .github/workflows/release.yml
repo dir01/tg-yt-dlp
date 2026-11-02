@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   bump:
@@ -50,20 +51,31 @@ jobs:
         if: steps.bump.outputs.changed == 'true'
         run: uv run --frozen python .github/smoke_test.py
 
-      - name: Commit and push
+      # master is protected and accepts changes only through a pull request,
+      # so the bump goes to a branch and the job merges its own PR.
+      - name: Open and merge PR
         id: push
         if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(uv run --frozen python -c 'import yt_dlp.version as v; print(v.__version__)')
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet uv.lock; then
             echo "no lockfile change (forced build), reusing current HEAD"
-          else
-            git commit -am "chore: bump yt-dlp to $VERSION"
-            git push
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          VERSION=$(uv run --frozen python -c 'import yt_dlp.version as v; print(v.__version__)')
+          BRANCH="bot/yt-dlp-$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git commit -am "chore: bump yt-dlp to $VERSION"
+          git push --force origin "$BRANCH"
+          # A PR from an earlier failed run can already exist for this branch.
+          gh pr create --head "$BRANCH" --title "chore: bump yt-dlp to $VERSION" \
+            --body "Automated by release.yml. Smoke test passed." || true
+          gh pr merge "$BRANCH" --merge --delete-branch
+          echo "sha=$(gh pr view "$BRANCH" --json mergeCommit -q .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
 
   image:
     name: Create and publish a Docker image
@@ -74,6 +86,6 @@ jobs:
       packages: write
     uses: ./.github/workflows/do_build_image.yml
     with:
-      # Explicit: a push made with GITHUB_TOKEN does not start a new workflow
-      # run, so this job has to build the bump commit itself.
+      # Explicit: a merge made with GITHUB_TOKEN does not start a new workflow
+      # run, so this job has to build the merge commit itself.
       ref: ${{ needs.bump.outputs.sha }}

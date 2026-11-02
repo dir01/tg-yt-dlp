@@ -20,6 +20,12 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    ignore:
+      # A Python minor bump must change .python-version and requires-python
+      # too, and it needs musl wheels for every compiled dependency. Do it by
+      # hand. Patch releases are safe and stay automatic.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       docker:
         patterns: ["*"]

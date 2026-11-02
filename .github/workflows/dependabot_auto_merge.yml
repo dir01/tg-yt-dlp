@@ -14,8 +14,16 @@ jobs:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
+      # Dependabot opens many PRs at the same time. When a different merge
+      # changes master first, GitHub refuses this one with "Base branch was
+      # modified", so try again after a short wait.
       - name: Merge
-        run: gh pr merge --merge "$PR_URL"
+        run: |
+          for attempt in 1 2 3 4 5; do
+            gh pr merge --merge "$PR_URL" && exit 0
+            sleep $((attempt * 15))
+          done
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

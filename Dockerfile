@@ -1,8 +1,8 @@
 # uv ships as a static binary; copying it from its own image keeps the version
 # pinned and skips a pip install on every build.
-FROM ghcr.io/astral-sh/uv:0.12.5 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
 
-FROM python:3.14.7-alpine3.24 AS builder
+FROM python:3.15.0-alpine3.24 AS builder
 
 # The toolchain is only needed to build wheels that have no musl release. It
 # stays in this stage and never reaches the image that ships.
@@ -18,7 +18,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 
-FROM python:3.14.7-alpine3.24
+FROM python:3.15.0-alpine3.24
 
 RUN apk add --no-cache ffmpeg
 

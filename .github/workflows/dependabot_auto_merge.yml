@@ -8,6 +8,7 @@ on: pull_request
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   automerge:
@@ -24,6 +25,14 @@ jobs:
             sleep $((attempt * 15))
           done
           exit 1
+
+      # A merge made with GITHUB_TOKEN does not start the push workflow. A
+      # workflow_dispatch event is the exception, so start the build that way.
+      # Then a dependency fix ships at once, not with the next yt-dlp release.
+      - name: Build the image
+        run: gh workflow run on_master.yml --repo "$GITHUB_REPOSITORY" --ref master
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

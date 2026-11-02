@@ -1,0 +1,79 @@
+# Keeping yt-dlp current is the entire point of this bot, so it gets its own
+# path that does not depend on Dependabot, auto-merge, or any personal access
+# token. Everything below runs on GITHUB_TOKEN.
+name: Update yt-dlp and release
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if yt-dlp is already current"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    name: Bump yt-dlp
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.bump.outputs.changed }}
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to an exact version on purpose: setup-uv stopped publishing
+      # moving major tags after v8, so @v10 does not exist.
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Bump yt-dlp to latest
+        id: bump
+        run: |
+          uv lock --upgrade-package yt-dlp
+          if git diff --quiet uv.lock && [ "${{ inputs.force }}" != "true" ]; then
+            echo "yt-dlp already current, nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test
+        if: steps.bump.outputs.changed == 'true'
+        run: uv run --frozen python .github/smoke_test.py
+
+      - name: Commit and push
+        id: push
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          VERSION=$(uv run --frozen python -c 'import yt_dlp.version as v; print(v.__version__)')
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet uv.lock; then
+            echo "no lockfile change (forced build), reusing current HEAD"
+          else
+            git commit -am "chore: bump yt-dlp to $VERSION"
+            git push
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  image:
+    name: Create and publish a Docker image
+    needs: bump
+    if: needs.bump.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/do_build_image.yml
+    with:
+      # Explicit: a push made with GITHUB_TOKEN does not start a new workflow
+      # run, so this job has to build the bump commit itself.
+      ref: ${{ needs.bump.outputs.sha }}

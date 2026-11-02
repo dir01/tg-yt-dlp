@@ -1,6 +1,11 @@
+.git/
+.github/
 .gitignore
 .dockerignore
 .env
+.python-version
+.venv/
 Dockerfile
 README.md
-.github/
+__pycache__/
+tmp/

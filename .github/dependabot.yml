@@ -1,7 +1,3 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
 version: 2
 updates:
   - package-ecosystem: "uv"
@@ -10,11 +6,28 @@ updates:
       interval: "daily"
     allow:
       - dependency-type: "direct"
+    ignore:
+      # Owned by release.yml, which bumps it daily, smoke-tests it, and builds
+      # an image directly. Leaving it here too would just create duplicate PRs.
+      - dependency-name: "yt-dlp"
+    # One PR per batch instead of one per package: they all ride the same daily
+    # image build anyway, so splitting them only multiplies merges.
+    groups:
+      python:
+        patterns: ["*"]
+
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "monthly"
+    groups:
+      docker:
+        patterns: ["*"]
+
   - package-ecosystem: "github-actions"
-    directory: ".github/workflows"
+    directory: "/"
     schedule:
       interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]

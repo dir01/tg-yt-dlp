@@ -1,33 +1,21 @@
-name: "Dependabot Automerge - Action"
+name: Dependabot automerge
 
-on:
-  pull_request:
+on: pull_request
+
+# Dependabot-triggered runs cannot read Actions secrets and get a read-only
+# GITHUB_TOKEN by default; elevating it here is what makes this work without a
+# personal access token.
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  worker:
-    permissions: write-all
-    runs-on: ubuntu-latest
-
+  automerge:
     if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
     steps:
-      - name: automerge
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.AUTOMERGE_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            const pull_number = context.payload.pull_request.number;
-
-            await github.rest.pulls.createReview({
-              owner,
-              repo,
-              pull_number,
-              event: 'APPROVE'
-            });
-
-            await github.rest.pulls.merge({
-              owner,
-              repo,
-              pull_number
-            });
-
+      - name: Merge
+        run: gh pr merge --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

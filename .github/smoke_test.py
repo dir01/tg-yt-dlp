@@ -92,6 +92,9 @@ def run_case(url: str, name: str, fmt: str, postprocessors: list) -> None:
 
 def main() -> None:
     print(f"yt-dlp {yt_dlp.version.__version__}")
+    # YouTube needs these scripts. A version that does not match yt-dlp breaks
+    # YouTube, and the hermetic test below cannot see that.
+    import yt_dlp_ejs  # noqa: F401
     with tempfile.TemporaryDirectory() as srcdir:
         make_sample(os.path.join(srcdir, "sample.mp4"))
         url, server = serve(srcdir)

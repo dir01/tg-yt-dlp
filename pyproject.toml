@@ -10,7 +10,9 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.45.2",
     "opentelemetry-sdk>=1.45.2",
     "python-telegram-bot>=22.8",
-    "yt-dlp>=2026.10.26",
+    # "default" adds yt-dlp-ejs, the scripts that solve the YouTube JavaScript
+    # challenges with deno. yt-dlp pins its exact version.
+    "yt-dlp[default]>=2026.10.26",
 ]
 
 [dependency-groups]

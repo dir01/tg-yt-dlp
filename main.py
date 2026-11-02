@@ -384,12 +384,19 @@ async def _send_cached(message, progress, key, mode) -> bool:
 
 
 async def _send(message, mode, media, **meta):
+    # A local Bot API server answers only after it has uploaded the file to
+    # Telegram, so the read timeout must be as long as the upload.
+    timeouts = {"read_timeout": UPLOAD_TIMEOUT, "write_timeout": UPLOAD_TIMEOUT}
     if mode == "audio":
         return await message.reply_audio(
-            audio=media, reply_to_message_id=message.message_id, **meta
+            audio=media, reply_to_message_id=message.message_id, **timeouts, **meta
         )
     return await message.reply_video(
-        video=media, supports_streaming=True, reply_to_message_id=message.message_id, **meta
+        video=media,
+        supports_streaming=True,
+        reply_to_message_id=message.message_id,
+        **timeouts,
+        **meta,
     )
 
 

@@ -26,7 +26,10 @@ RUN uv sync --frozen --no-dev
 
 FROM python:3.15.2-alpine3.24
 
-RUN apk add --no-cache ffmpeg
+# yt-dlp needs a JavaScript runtime for YouTube. Without it, YouTube gives
+# almost no formats ("Requested format is not available"). deno is the
+# runtime that yt-dlp uses by default.
+RUN apk add --no-cache ffmpeg deno
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv

@@ -2,7 +2,10 @@
 # pinned and skips a pip install on every build.
 FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
 
-FROM python:3.15.0-alpine3.24 AS builder
+# Keep the Python minor version equal to .python-version. A new minor version
+# often has no musl wheels for frozenlist, multidict and propcache yet, so they
+# compile from source, and the build becomes many times slower.
+FROM python:3.14.10-alpine3.24 AS builder
 
 # The toolchain is only needed to build wheels that have no musl release. It
 # stays in this stage and never reaches the image that ships.
@@ -18,7 +21,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 
-FROM python:3.15.0-alpine3.24
+FROM python:3.14.10-alpine3.24
 
 RUN apk add --no-cache ffmpeg
 

@@ -13,6 +13,7 @@ guarded at the call site.
 
 import logging
 import os
+from collections.abc import Callable
 
 from opentelemetry import metrics, trace
 
@@ -24,11 +25,12 @@ LOG = logging.getLogger(__name__)
 BUILD_TIMESTAMP = float(os.environ.get("BUILD_TIMESTAMP") or 0)
 
 _provider_installed = False
+_logger_provider = None
 
 
 def setup() -> None:
     """Install the OTLP exporters. Safe to call once, early in startup."""
-    global _provider_installed
+    global _provider_installed, _logger_provider
     if _provider_installed:
         return
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -36,8 +38,12 @@ def setup() -> None:
         LOG.info("OTEL_EXPORTER_OTLP_ENDPOINT unset, telemetry disabled")
         return
 
+    from opentelemetry._logs import set_logger_provider
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.resources import Resource
@@ -59,6 +65,15 @@ def setup() -> None:
             metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())],
         )
     )
+
+    # Logs also go out over OTLP, with severity, service.name, the trace_id of
+    # the current span, and a traceback as one record. The stdout handler stays
+    # for kubectl logs.
+    _logger_provider = LoggerProvider(resource=resource)
+    _logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+    set_logger_provider(_logger_provider)
+    logging.getLogger().addHandler(LoggingHandler(logger_provider=_logger_provider))
+
     _provider_installed = True
     LOG.info("telemetry exporting to %s (yt-dlp %s)", endpoint, yt_dlp.version.__version__)
 
@@ -67,7 +82,7 @@ def shutdown() -> None:
     """Flush pending spans/metrics on the way out."""
     if not _provider_installed:
         return
-    for provider in (trace.get_tracer_provider(), metrics.get_meter_provider()):
+    for provider in (trace.get_tracer_provider(), metrics.get_meter_provider(), _logger_provider):
         if hasattr(provider, "shutdown"):
             try:
                 provider.shutdown()
@@ -81,23 +96,47 @@ def shutdown() -> None:
 _meter = metrics.get_meter("tg-yt-dlp")
 tracer = trace.get_tracer("tg-yt-dlp")
 
-messages = _meter.create_counter(
-    "tg_yt_dlp.messages",
-    description="Messages handled, by handler",
-)
 downloads = _meter.create_counter(
     "tg_yt_dlp.downloads",
-    description="Download attempts, by mode/outcome/domain",
+    description="Download attempts, by mode/outcome/domain, and error.type for errors",
 )
 download_duration = _meter.create_histogram(
     "tg_yt_dlp.download.duration",
     unit="s",
-    description="Wall time from request to upload complete",
+    description="Time from a free download slot to the end of the request, by mode/outcome",
+)
+slot_wait = _meter.create_histogram(
+    "tg_yt_dlp.download.slot_wait",
+    unit="s",
+    description="Time that a request waited for a free download slot, by mode",
+)
+download_size = _meter.create_histogram(
+    "tg_yt_dlp.download.size",
+    unit="By",
+    description="Size of the downloaded file before the size check, by mode",
 )
 in_flight = _meter.create_up_down_counter(
     "tg_yt_dlp.downloads.in_flight",
     description="Downloads currently running",
 )
+waiting = _meter.create_up_down_counter(
+    "tg_yt_dlp.downloads.waiting",
+    description="Requests that wait for a free download slot",
+)
+
+
+def observe_poll_age(age: Callable[[], float]) -> None:
+    """Export the seconds since Telegram last answered getUpdates."""
+
+    def callback(_options):
+        yield metrics.Observation(age(), {})
+
+    _meter.create_observable_gauge(
+        "tg_yt_dlp.poll.age",
+        unit="s",
+        description="Seconds since Telegram last answered getUpdates",
+        callbacks=[callback],
+    )
 
 
 def _observe_build_timestamp(_options):

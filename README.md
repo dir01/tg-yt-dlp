@@ -22,6 +22,27 @@ instrumentation is a no-op, so local runs need no collector.
 `tg_yt_dlp.build.timestamp` reports when the running image was built — alert on it aging past a few
 days to catch a stalled release pipeline.
 
+Logs also go out over OTLP, with severity, `service.name` and the `trace_id` of the current span. A
+traceback is one record.
+
+| Metric | Type | Attributes |
+| --- | --- | --- |
+| `tg_yt_dlp.downloads` | counter | `mode`, `domain`, `outcome`, `error.type` (errors only) |
+| `tg_yt_dlp.download.duration` | histogram, s | `mode`, `outcome`, `error.type` (errors only). Starts when a slot is free |
+| `tg_yt_dlp.download.slot_wait` | histogram, s | `mode` |
+| `tg_yt_dlp.download.size` | histogram, By | `mode` |
+| `tg_yt_dlp.downloads.in_flight` | up-down counter | `mode` |
+| `tg_yt_dlp.downloads.waiting` | up-down counter | `mode` |
+| `tg_yt_dlp.poll.age` | gauge, s | Seconds since Telegram last answered `getUpdates` |
+| `tg_yt_dlp.build.timestamp` | gauge, s | Unix time of the image build |
+
+`outcome` is `ok`, `cached`, `too_large`, `invalid_url` or `error`. `error.type` is `format`,
+`rate_limited`, `login_required`, `unavailable`, `unsupported`, `download_other`, `telegram` or
+`other`.
+
+Each request has a `handle_url` span with the child spans `wait_slot`, `probe`, `download`,
+`media_meta`, `upload`, or `send_cached` for a cached file.
+
 `GET /health` on port 9100 backs the k8s probes. It returns 503 when Telegram did not answer a
 `getUpdates` call for `MAX_POLL_AGE_SECONDS`, so a liveness probe restarts a bot that cannot poll.
 

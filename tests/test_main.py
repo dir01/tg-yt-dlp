@@ -9,6 +9,7 @@ from telegram.error import BadRequest
 
 import main
 import telemetry
+import yt_dlp
 from conftest import needs_ffmpeg
 
 
@@ -79,10 +80,9 @@ async def _get(app, path):
         return response.status, await response.json()
 
 
-@pytest.mark.parametrize("path", ["/health", "/metrics"])
-def test_health_when_polling_works(path):
+def test_health_when_polling_works():
     tracker = SimpleNamespace(last_ok=time.monotonic())
-    status, body = asyncio.run(_get(main._health_app(tracker), path))
+    status, body = asyncio.run(_get(main._health_app(tracker), "/health"))
     assert status == 200
     assert body["status"] == "ok"
 
@@ -197,3 +197,25 @@ def test_refused_file_id_downloads_again(sample_url, tmp_path, count_extractions
     assert _run(message, sample_url, tmp_path) == "ok"
     assert len(count_extractions) == 1
     assert main._file_ids.get(("video", sample_url)) == "file-id-1"
+
+
+@pytest.mark.parametrize(
+    "message, label",
+    [
+        ("ERROR: [Instagram] x: No video formats found!", "format"),
+        ("ERROR: [youtube] x: Requested format is not available", "format"),
+        ("ERROR: [Instagram] x: Instagram sent an empty media response. Use --cookies", "login_required"),
+        ("ERROR: [youtube] x: Sign in to confirm you're not a bot", "login_required"),
+        ("ERROR: [youtube] x: Video unavailable", "unavailable"),
+        ("ERROR: unable to download webpage: HTTP Error 429: Too Many Requests", "rate_limited"),
+        ("ERROR: Unsupported URL: https://example.com", "unsupported"),
+        ("ERROR: something new", "download_other"),
+    ],
+)
+def test_classify_download_errors(message, label):
+    assert main.classify_error(yt_dlp.utils.DownloadError(message)) == label
+
+
+def test_classify_other_errors():
+    assert main.classify_error(BadRequest("x")) == "telegram"
+    assert main.classify_error(RuntimeError("x")) == "other"

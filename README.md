@@ -13,18 +13,6 @@ Every day, [`release.yml`](.github/workflows/release.yml):
 3. Commits the lockfile and builds a multi-arch image to `ghcr.io`
 4. (Irrelevant to anyone but me) [argocd-image-updater](https://argocd-image-updater.readthedocs.io/en/stable/) in my cluster detects the new `sha-*` tag and rolls it out
 
-This path runs entirely on `GITHUB_TOKEN`. An earlier version relied on Dependabot plus an
-auto-merge personal access token; the token expired, the chain broke silently, and the bot ran a
-14-month-old yt-dlp before anyone noticed. Hence also the staleness metric below.
-
-Dependabot still manages everything *except* yt-dlp — grouped into one PR per ecosystem — and those
-PRs auto-merge and get picked up by the next daily build.
-
-Since those merge unattended, [`ci.yml`](.github/workflows/ci.yml) runs the same smoke test plus an
-image build on every pull request.
-
-Every scheduled workflow also accepts `workflow_dispatch`, so the nightly release, the master image
-build, and the CodeQL scan can each be run by hand from the Actions tab when testing a change.
 
 ## Observability
 Metrics and traces are exported over OTLP, configured through the standard `OTEL_*` environment
